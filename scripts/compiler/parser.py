@@ -80,6 +80,11 @@ class Parser:
         
         type_node = self._parse_type()
         
+        # If we just parsed a struct definition with body, it's complete
+        if type_node.type == 'StructDeclaration':
+            self._expect('PUNCTUATION', ';')
+            return type_node
+        
         # Parse declarators (can be multiple, separated by commas)
         declarators = []
         
@@ -149,13 +154,31 @@ class Parser:
         # Parse parameters
         params = []
         while self._current_token() and self._current_token().value != ')':
-            if self._current_token().type == 'KEYWORD' and self._current_token().value in ('int', 'float', 'char', 'void', 'bool'):
-                param_type = self._parse_type()
-                param_name = self._expect('IDENTIFIER')
-                if param_name:
-                    params.append(ASTNode(type='Parameter', children=[param_type, ASTNode(type='Identifier', value=param_name.value, line=param_name.line)]))
+            # Check if this is a parameter (starts with type or qualifier)
+            token = self._current_token()
+            if token and token.type == 'KEYWORD' and token.value in ('int', 'float', 'double', 'char', 'void', 'bool', 'const', 'volatile', 'unsigned', 'signed', 'struct'):
+                # Collect type and qualifiers
+                type_str = []
+                while self._current_token() and self._current_token().type == 'KEYWORD' and self._current_token().value in ('const', 'volatile', 'unsigned', 'signed', 'int', 'float', 'double', 'char', 'void', 'bool', 'struct'):
+                    type_str.append(self._current_token().value)
+                    self._advance()
+                
+                # Handle pointers
+                while self._current_token() and self._current_token().value in ('*', '&'):
+                    type_str.append(self._current_token().value)
+                    self._advance()
+                
+                # Now expect parameter name
+                if self._current_token() and self._current_token().type == 'IDENTIFIER':
+                    param_name = self._current_token()
+                    self._advance()
+                    type_node = ASTNode(type='Type', value=' '.join(type_str))
+                    params.append(ASTNode(type='Parameter', children=[type_node, ASTNode(type='Identifier', value=param_name.value, line=param_name.line)]))
             
             if self._current_token() and self._current_token().value == ',':
+                self._advance()
+            elif self._current_token() and self._current_token().value != ')':
+                # Skip unknown tokens to avoid infinite loop
                 self._advance()
             else:
                 break
@@ -172,14 +195,107 @@ class Parser:
         return ASTNode(type='FunctionDeclaration', children=children, line=line)
     
     def _parse_type(self) -> ASTNode:
-        """type : int | float | char | void | bool | struct"""
-        token = self._current_token()
-        if token and token.type == 'KEYWORD' and token.value in ('int', 'float', 'char', 'void', 'bool', 'struct'):
-            self._advance()
-            return ASTNode(type='Type', value=token.value, line=token.line)
+        """type : [const] [volatile] base_type [*|&]"""
+        line = self._current_token().line if self._current_token() else 0
+        type_parts = []
         
-        self.errors.append(f"Expected type at line {token.line if token else 'unknown'}")
-        return ASTNode(type='Type', value='unknown')
+        # Handle type qualifiers
+        while self._current_token() and self._current_token().value in ('const', 'volatile', 'unsigned', 'signed'):
+            type_parts.append(self._current_token().value)
+            self._advance()
+        
+        token = self._current_token()
+        if not token:
+            self.errors.append(f"Expected type at line {line}")
+            return ASTNode(type='Type', value='unknown')
+        
+        # Handle base type (including double)
+        if token.type == 'KEYWORD' and token.value in ('int', 'float', 'double', 'char', 'void', 'bool', 'struct'):
+            type_parts.append(token.value)
+            self._advance()
+            
+            # Handle struct definition: struct Name { ... } or struct Name (reference)
+            if type_parts[-1] == 'struct':
+                if self._current_token() and self._current_token().type == 'IDENTIFIER':
+                    struct_name = self._current_token().value
+                    self._advance()
+                    
+                    # Check if this is a struct definition with body
+                    if self._current_token() and self._current_token().value == '{':
+                        self._advance()
+                        fields = []
+                        while self._current_token() and self._current_token().value != '}':
+                            # Check if we can parse a field
+                            if self._current_token().type == 'KEYWORD' and self._current_token().value in ('int', 'float', 'double', 'char', 'void', 'bool', 'const', 'volatile', 'unsigned', 'signed'):
+                                field = self._parse_struct_field()
+                                if field:
+                                    fields.append(field)
+                            else:
+                                break
+                        self._expect('PUNCTUATION', '}')
+                        return ASTNode(type='StructDeclaration', value=struct_name, children=fields, line=line)
+                    else:
+                        # Struct without body (reference or forward declaration)
+                        type_parts[-1] = 'struct ' + struct_name
+        else:
+            self.errors.append(f"Expected type at line {token.line if token else 'unknown'}")
+            return ASTNode(type='Type', value='unknown')
+        
+        # Handle pointer/reference declarators
+        while self._current_token() and self._current_token().value in ('*', '&'):
+            type_parts.append(self._current_token().value)
+            self._advance()
+        
+        return ASTNode(type='Type', value=' '.join(type_parts), line=line)
+    
+    def _parse_struct_field(self) -> Optional[ASTNode]:
+        """Parse a struct field declaration: type [*] IDENTIFIER;"""
+        if not self._current_token() or self._current_token().value == '}':
+            return None
+        
+        line = self._current_token().line if self._current_token() else 0
+        
+        # Parse base type and qualifiers
+        type_parts = []
+        
+        # Collect all type qualifiers and base type
+        while self._current_token():
+            token = self._current_token()
+            if token.type == 'KEYWORD' and token.value in ('const', 'volatile', 'unsigned', 'signed', 'int', 'float', 'double', 'char', 'void', 'bool'):
+                type_parts.append(token.value)
+                self._advance()
+            else:
+                break
+        
+        if not type_parts:
+            return None
+        
+        type_node = ASTNode(type='Type', value=' '.join(type_parts), line=line)
+        
+        # Handle pointers/references
+        while self._current_token() and self._current_token().value in ('*', '&'):
+            type_node.value += ' ' + self._current_token().value
+            self._advance()
+        
+        # Parse field name (required)
+        if not self._current_token() or self._current_token().type != 'IDENTIFIER':
+            # Invalid field, try to recover
+            return None
+        
+        name_token = self._current_token()
+        self._advance()
+        
+        field_node = ASTNode(
+            type='StructField',
+            children=[type_node, ASTNode(type='Identifier', value=name_token.value, line=name_token.line)],
+            line=line
+        )
+        
+        # Consume semicolon if present
+        if self._current_token() and self._current_token().value == ';':
+            self._advance()
+        
+        return field_node
     
     def _parse_statement(self) -> ASTNode:
         """statement : declaration | assignment | if_stmt | while_stmt | for_stmt | block | return_stmt"""
@@ -189,8 +305,8 @@ class Parser:
             return ASTNode(type='Statement', value='empty')
         
         if token.type == 'KEYWORD':
-            # Check if this is a type declaration (int, float, char, void, bool)
-            if token.value in ('int', 'float', 'char', 'void', 'bool'):
+            # Check if this is a type declaration or qualifier
+            if token.value in ('int', 'float', 'double', 'char', 'void', 'bool', 'struct', 'const', 'volatile', 'unsigned', 'signed'):
                 return self._parse_declaration()
             elif token.value == 'if':
                 return self._parse_if_statement()
@@ -200,6 +316,10 @@ class Parser:
                 return self._parse_for_statement()
             elif token.value == 'return':
                 return self._parse_return_statement()
+            elif token.value == 'break':
+                return self._parse_break_statement()
+            elif token.value == 'continue':
+                return self._parse_continue_statement()
             elif token.value == '{':
                 return self._parse_block()
         
@@ -266,8 +386,8 @@ class Parser:
         # Init - can be declaration or expression
         if self._current_token() and self._current_token().value != ';':
             token = self._current_token()
-            # Check if it's a declaration (type keyword)
-            if token.type == 'KEYWORD' and token.value in ('int', 'float', 'char', 'void', 'bool'):
+            # Check if it's a declaration (type keyword or qualifier)
+            if token.type == 'KEYWORD' and token.value in ('int', 'float', 'double', 'char', 'void', 'bool', 'const', 'volatile', 'unsigned', 'signed'):
                 children.append(self._parse_declaration_for_loop())
             else:
                 children.append(self._parse_expression())
@@ -342,6 +462,22 @@ class Parser:
         
         return ASTNode(type='ReturnStatement', children=children, line=line)
     
+    def _parse_break_statement(self) -> ASTNode:
+        """break_stmt : break ;"""
+        line = self._current_token().line if self._current_token() else 0
+        self._expect('KEYWORD', 'break')
+        self._expect('PUNCTUATION', ';')
+        
+        return ASTNode(type='BreakStatement', line=line)
+    
+    def _parse_continue_statement(self) -> ASTNode:
+        """continue_stmt : continue ;"""
+        line = self._current_token().line if self._current_token() else 0
+        self._expect('KEYWORD', 'continue')
+        self._expect('PUNCTUATION', ';')
+        
+        return ASTNode(type='ContinueStatement', line=line)
+    
     def _parse_expression_statement(self) -> ASTNode:
         """expression_statement : expression? ;"""
         if self._current_token() and self._current_token().value != ';':
@@ -359,10 +495,11 @@ class Parser:
         return self._parse_assignment_expr()
     
     def _parse_assignment_expr(self) -> ASTNode:
-        """assignment_expr : logical_or_expr (= logical_or_expr)*"""
+        """assignment_expr : logical_or_expr (= | += | -= | *= | /= | %= | logical_or_expr)*"""
         left = self._parse_logical_or_expr()
         
-        while self._current_token() and self._current_token().value == '=':
+        # Handle assignment operators: =, +=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=
+        while self._current_token() and self._current_token().value in ('=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>='):
             op = self._advance().value
             right = self._parse_logical_or_expr()
             left = ASTNode(type='BinaryOp', value=op, children=[left, right])
@@ -436,8 +573,42 @@ class Parser:
         return left
     
     def _parse_unary_expr(self) -> ASTNode:
-        """unary_expr : (! | - | + | & | *) unary_expr | postfix_expr"""
+        """unary_expr : (! | - | + | & | *) unary_expr | (type) unary_expr | sizeof unary_expr | postfix_expr"""
         token = self._current_token()
+        
+        # Handle sizeof operator: sizeof(type) or sizeof expr
+        if token and token.value == 'sizeof':
+            self._advance()
+            if self._current_token() and self._current_token().value == '(':
+                # Could be sizeof(type) or sizeof(expr)
+                peek = self._peek_token()
+                if peek and peek.type == 'KEYWORD' and peek.value in ('int', 'float', 'double', 'char', 'void', 'bool', 'const', 'volatile', 'unsigned', 'signed', 'struct'):
+                    # It's sizeof(type)
+                    self._advance()  # consume '('
+                    type_node = self._parse_type()
+                    self._expect('PUNCTUATION', ')')
+                    return ASTNode(type='SizeofType', children=[type_node])
+                else:
+                    # It's sizeof(expr)
+                    self._advance()  # consume '('
+                    expr = self._parse_expression()
+                    self._expect('PUNCTUATION', ')')
+                    return ASTNode(type='SizeofExpr', children=[expr])
+            else:
+                # sizeof expr
+                operand = self._parse_unary_expr()
+                return ASTNode(type='SizeofExpr', children=[operand])
+        
+        # Handle type casting: (type) expr or (struct Name) expr or (type *) expr
+        if token and token.value == '(':
+            # Look ahead to see if this is a type cast
+            peek = self._peek_token()
+            if peek and peek.type == 'KEYWORD' and peek.value in ('int', 'float', 'double', 'char', 'void', 'bool', 'const', 'volatile', 'unsigned', 'signed', 'struct'):
+                self._advance()  # consume '('
+                type_node = self._parse_type()
+                self._expect('PUNCTUATION', ')')
+                operand = self._parse_unary_expr()
+                return ASTNode(type='TypeCast', children=[type_node, operand])
         
         if token and token.value in ('!', '-', '+', '++', '--', '&', '*'):
             op = self._advance().value
@@ -447,7 +618,7 @@ class Parser:
         return self._parse_postfix_expr()
     
     def _parse_postfix_expr(self) -> ASTNode:
-        """postfix_expr : primary_expr (++ | -- | [ expr ] | ( arguments ))*"""
+        """postfix_expr : primary_expr (++ | -- | [ expr ] | ( arguments ) | . member | -> member)*"""
         expr = self._parse_primary_expr()
         
         while True:
@@ -472,6 +643,16 @@ class Parser:
                         self._advance()
                 self._expect('PUNCTUATION', ')')
                 expr = ASTNode(type='FunctionCall', children=[expr] + args)
+            elif token.value == '.':
+                self._advance()
+                member = self._expect('IDENTIFIER')
+                if member:
+                    expr = ASTNode(type='MemberAccess', children=[expr, ASTNode(type='Identifier', value=member.value)])
+            elif token.value == '->':
+                self._advance()
+                member = self._expect('IDENTIFIER')
+                if member:
+                    expr = ASTNode(type='PointerMemberAccess', children=[expr, ASTNode(type='Identifier', value=member.value)])
             else:
                 break
         
