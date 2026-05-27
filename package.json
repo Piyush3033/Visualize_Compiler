@@ -1,31 +1,12 @@
 {
-  "name": "visualize-compiler",
-  "version": "1.0.0",
-  "description": "Advanced Abstract Syntax Tree (AST) Visualizer for C, C++, Java, and Python with interactive visualization, type inference, and semantic analysis",
-  "private": false,
-  "license": "MIT",
-  "author": "Piyush Parmar",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Piyush3033/Visualize_Compiler.git"
-  },
-  "keywords": [
-    "ast",
-    "compiler",
-    "visualizer",
-    "syntax-tree",
-    "parsing",
-    "semantic-analysis",
-    "c",
-    "c++",
-    "java",
-    "python"
-  ],
+  "name": "my-project",
+  "version": "0.1.0",
+  "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "type-check": "tsc --noEmit"
+    "lint": "eslint ."
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
