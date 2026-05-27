@@ -316,6 +316,10 @@ class Parser:
                 return self._parse_for_statement()
             elif token.value == 'return':
                 return self._parse_return_statement()
+            elif token.value == 'break':
+                return self._parse_break_statement()
+            elif token.value == 'continue':
+                return self._parse_continue_statement()
             elif token.value == '{':
                 return self._parse_block()
         
@@ -458,6 +462,22 @@ class Parser:
         
         return ASTNode(type='ReturnStatement', children=children, line=line)
     
+    def _parse_break_statement(self) -> ASTNode:
+        """break_stmt : break ;"""
+        line = self._current_token().line if self._current_token() else 0
+        self._expect('KEYWORD', 'break')
+        self._expect('PUNCTUATION', ';')
+        
+        return ASTNode(type='BreakStatement', line=line)
+    
+    def _parse_continue_statement(self) -> ASTNode:
+        """continue_stmt : continue ;"""
+        line = self._current_token().line if self._current_token() else 0
+        self._expect('KEYWORD', 'continue')
+        self._expect('PUNCTUATION', ';')
+        
+        return ASTNode(type='ContinueStatement', line=line)
+    
     def _parse_expression_statement(self) -> ASTNode:
         """expression_statement : expression? ;"""
         if self._current_token() and self._current_token().value != ';':
@@ -475,10 +495,11 @@ class Parser:
         return self._parse_assignment_expr()
     
     def _parse_assignment_expr(self) -> ASTNode:
-        """assignment_expr : logical_or_expr (= logical_or_expr)*"""
+        """assignment_expr : logical_or_expr (= | += | -= | *= | /= | %= | logical_or_expr)*"""
         left = self._parse_logical_or_expr()
         
-        while self._current_token() and self._current_token().value == '=':
+        # Handle assignment operators: =, +=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=
+        while self._current_token() and self._current_token().value in ('=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>='):
             op = self._advance().value
             right = self._parse_logical_or_expr()
             left = ASTNode(type='BinaryOp', value=op, children=[left, right])
